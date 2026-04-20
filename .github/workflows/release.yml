@@ -30,26 +30,35 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # ── 3. .NET 8 SDK 설정 (C# 프로젝트 포함) ─────────────────
-      - name: Setup .NET 8
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-
-      # ── 4. NuGet 패키지 복원 ──────────────────────────────────
-      - name: Restore NuGet packages
-        run: nuget restore CommStack.sln
-
-      # ── 5. 솔루션 빌드 (Release | x64) ───────────────────────
-      - name: Build solution
+      # ── 3. 핵심 DLL 빌드 (CommStack.vcxproj만 대상) ──────────
+      #  전체 솔루션 대신 CommStack.vcxproj만 빌드합니다.
+      #  - nuget restore 불필요 (순수 C++ 프로젝트)
+      #  - 테스트 프로젝트(Tests/)는 릴리즈 대상이 아니므로 제외
+      - name: Build CommStack.dll
         run: |
-          msbuild CommStack.sln `
+          msbuild CommStack\CommStack.vcxproj `
             /p:Configuration=Release `
             /p:Platform=x64 `
             /m `
             /verbosity:minimal
 
-      # ── 6. 배포 패키지 구성 ───────────────────────────────────
+      # ── 4. 빌드 결과물 확인 ───────────────────────────────────
+      - name: Verify build output
+        shell: pwsh
+        run: |
+          $required = @(
+            "Bin\x64\Release\CommStack.dll",
+            "Bin\x64\Release\CommStack.lib"
+          )
+          foreach ($f in $required) {
+            if (-not (Test-Path $f)) {
+              Write-Error "필수 파일 누락: $f"
+              exit 1
+            }
+            Write-Host "OK: $f"
+          }
+
+      # ── 5. 배포 패키지 구성 ───────────────────────────────────
       #  CommStack.dll / CommStack.lib + Include 헤더 전체를 zip으로 묶음
       - name: Package release artifacts
         shell: pwsh
@@ -60,31 +69,31 @@ jobs:
             "dev-$($env:GITHUB_SHA.Substring(0,7))"
           }
 
-          $dist = "dist/CommStack-$version"
-          New-Item -ItemType Directory -Force -Path "$dist/Include" | Out-Null
+          $dist = "dist\CommStack-$version"
+          New-Item -ItemType Directory -Force -Path "$dist\Include" | Out-Null
 
           # 핵심 바이너리
-          Copy-Item "Bin/x64/Release/CommStack.dll" "$dist/"
-          Copy-Item "Bin/x64/Release/CommStack.lib" "$dist/"
+          Copy-Item "Bin\x64\Release\CommStack.dll" "$dist\"
+          Copy-Item "Bin\x64\Release\CommStack.lib" "$dist\"
 
           # 공개 헤더
-          Copy-Item "Include/*.hpp" "$dist/Include/"
+          Copy-Item "Include\*.hpp" "$dist\Include\"
 
           # README 포함
-          Copy-Item "README.md" "$dist/"
+          Copy-Item "README.md" "$dist\"
 
           # zip 생성
           $zipName = "CommStack-$version-win-x64.zip"
-          Compress-Archive -Path "$dist/*" -DestinationPath $zipName
+          Compress-Archive -Path "$dist\*" -DestinationPath $zipName
 
           # 다음 스텝에서 사용할 환경 변수 저장
-          "ZIP_NAME=$zipName"     | Out-File -FilePath $env:GITHUB_ENV -Append
-          "VERSION=$version"      | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ZIP_NAME=$zipName"  | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VERSION=$version"   | Out-File -FilePath $env:GITHUB_ENV -Append
 
-          Write-Host "Packaged: $zipName"
+          Write-Host "패키지 완료: $zipName"
           Get-ChildItem $dist -Recurse | Select-Object FullName
 
-      # ── 7. 빌드 아티팩트 업로드 (모든 트리거에서 실행) ────────
+      # ── 6. 빌드 아티팩트 업로드 (모든 트리거에서 실행) ────────
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -92,7 +101,7 @@ jobs:
           path: ${{ env.ZIP_NAME }}
           retention-days: 30
 
-      # ── 8. GitHub Release 생성 (태그 푸시 시에만 실행) ────────
+      # ── 7. GitHub Release 생성 (태그 푸시 시에만 실행) ────────
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -121,5 +130,5 @@ jobs:
             ### C# 프로젝트 적용
             ```
             CommStack.dll 을 출력 디렉터리에 복사 후 P/Invoke 사용
-            (NativeMethods.cs 참고)
+            (Tests/CommStack.Client/Core/NativeMethods.cs 참고)
             ```
