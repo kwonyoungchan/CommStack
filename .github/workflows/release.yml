@@ -1,0 +1,125 @@
+name: Build & Release
+
+# ──────────────────────────────────────────────────────────────
+#  트리거 규칙
+#  - main 푸시       : 빌드 + 아티팩트 업로드 (CI 검증)
+#  - v* 태그 푸시    : 빌드 + GitHub Release 생성 + zip 첨부 (CD)
+#  - main PR         : 빌드만 (머지 전 검증)
+# ──────────────────────────────────────────────────────────────
+on:
+  push:
+    branches: [ main ]
+    tags:     [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: write   # Release 생성 및 asset 업로드에 필요
+
+jobs:
+  build:
+    name: Build (Release | x64)
+    runs-on: windows-latest
+
+    steps:
+      # ── 1. 소스 체크아웃 ──────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. MSBuild 환경 설정 ──────────────────────────────────
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      # ── 3. .NET 8 SDK 설정 (C# 프로젝트 포함) ─────────────────
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # ── 4. NuGet 패키지 복원 ──────────────────────────────────
+      - name: Restore NuGet packages
+        run: nuget restore CommStack.sln
+
+      # ── 5. 솔루션 빌드 (Release | x64) ───────────────────────
+      - name: Build solution
+        run: |
+          msbuild CommStack.sln `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /m `
+            /verbosity:minimal
+
+      # ── 6. 배포 패키지 구성 ───────────────────────────────────
+      #  CommStack.dll / CommStack.lib + Include 헤더 전체를 zip으로 묶음
+      - name: Package release artifacts
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF -match '^refs/tags/(v.+)$') {
+            $matches[1]
+          } else {
+            "dev-$($env:GITHUB_SHA.Substring(0,7))"
+          }
+
+          $dist = "dist/CommStack-$version"
+          New-Item -ItemType Directory -Force -Path "$dist/Include" | Out-Null
+
+          # 핵심 바이너리
+          Copy-Item "Bin/x64/Release/CommStack.dll" "$dist/"
+          Copy-Item "Bin/x64/Release/CommStack.lib" "$dist/"
+
+          # 공개 헤더
+          Copy-Item "Include/*.hpp" "$dist/Include/"
+
+          # README 포함
+          Copy-Item "README.md" "$dist/"
+
+          # zip 생성
+          $zipName = "CommStack-$version-win-x64.zip"
+          Compress-Archive -Path "$dist/*" -DestinationPath $zipName
+
+          # 다음 스텝에서 사용할 환경 변수 저장
+          "ZIP_NAME=$zipName"     | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VERSION=$version"      | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          Write-Host "Packaged: $zipName"
+          Get-ChildItem $dist -Recurse | Select-Object FullName
+
+      # ── 7. 빌드 아티팩트 업로드 (모든 트리거에서 실행) ────────
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CommStack-binaries
+          path: ${{ env.ZIP_NAME }}
+          retention-days: 30
+
+      # ── 8. GitHub Release 생성 (태그 푸시 시에만 실행) ────────
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: CommStack ${{ env.VERSION }}
+          tag_name: ${{ env.VERSION }}
+          files: ${{ env.ZIP_NAME }}
+          generate_release_notes: true
+          body: |
+            ## CommStack ${{ env.VERSION }} — Windows x64 Release
+
+            ### 포함 파일
+            | 파일 | 설명 |
+            |------|------|
+            | `CommStack.dll` | 런타임 배포용 DLL |
+            | `CommStack.lib` | C++ 링크용 임포트 라이브러리 |
+            | `Include/*.hpp` | 공개 헤더 (API, 채널, 자료구조) |
+
+            ### C++ 프로젝트 적용
+            ```
+            추가 포함 디렉터리 : Include/
+            추가 라이브러리    : CommStack.lib
+            런타임 복사        : CommStack.dll → 실행파일 경로
+            ```
+
+            ### C# 프로젝트 적용
+            ```
+            CommStack.dll 을 출력 디렉터리에 복사 후 P/Invoke 사용
+            (NativeMethods.cs 참고)
+            ```
