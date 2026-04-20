@@ -2,9 +2,9 @@ name: Build & Release
 
 # ──────────────────────────────────────────────────────────────
 #  트리거 규칙
-#  - main 푸시       : 빌드 + 아티팩트 업로드 (CI 검증)
-#  - v* 태그 푸시    : 빌드 + GitHub Release 생성 + zip 첨부 (CD)
-#  - main PR         : 빌드만 (머지 전 검증)
+#  - main 푸시    : 빌드 + 정적분석 + 단위테스트 (CI 검증)
+#  - v* 태그 푸시 : CI 전체 + GitHub Release 생성 + zip 첨부
+#  - main PR      : CI 전체 (머지 전 검증)
 # ──────────────────────────────────────────────────────────────
 on:
   push:
@@ -14,52 +14,105 @@ on:
     branches: [ main ]
 
 permissions:
-  contents: write   # Release 생성 및 asset 업로드에 필요
+  contents: write
 
 jobs:
-  build:
-    name: Build (Release | x64)
+  # ════════════════════════════════════════════════════════════
+  #  Job 1: 정적 분석 (/analyze)
+  # ════════════════════════════════════════════════════════════
+  static-analysis:
+    name: Static Analysis (MSVC /analyze)
     runs-on: windows-latest
 
     steps:
-      # ── 1. 소스 체크아웃 ──────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. MSBuild 환경 설정 ──────────────────────────────────
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # ── 3. 핵심 DLL 빌드 (CommStack.vcxproj만 대상) ──────────
-      #  전체 솔루션 대신 CommStack.vcxproj만 빌드합니다.
-      #  - nuget restore 불필요 (순수 C++ 프로젝트)
-      #  - 테스트 프로젝트(Tests/)는 릴리즈 대상이 아니므로 제외
-      - name: Build CommStack.dll
+      - name: Run MSVC Static Analysis
         run: |
           msbuild CommStack\CommStack.vcxproj `
             /p:Configuration=Release `
             /p:Platform=x64 `
+            /p:RunCodeAnalysis=true `
+            /p:CodeAnalysisRuleSet=NativeRecommendedRules.ruleset `
+            /p:EnableCppCoreCheck=true `
             /m `
             /verbosity:minimal
+        # 정적 분석 경고를 오류로 처리하지 않음 (경고 목록을 아티팩트로 수집)
+        continue-on-error: false
 
-      # ── 4. 빌드 결과물 확인 ───────────────────────────────────
+  # ════════════════════════════════════════════════════════════
+  #  Job 2: 단위 테스트
+  # ════════════════════════════════════════════════════════════
+  unit-tests:
+    name: Unit Tests
+    runs-on: windows-latest
+    needs: static-analysis
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      # CommStack.dll을 먼저 빌드 (UnitTests가 링크에 필요)
+      - name: Build CommStack.dll (Release)
+        run: |
+          msbuild CommStack\CommStack.vcxproj `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /m /verbosity:minimal
+
+      # UnitTests 빌드
+      - name: Build UnitTests
+        run: |
+          msbuild Tests\UnitTests\UnitTests.vcxproj `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /m /verbosity:minimal
+
+      # 테스트 실행 (exit code 비 0 → 스텝 실패)
+      - name: Run Unit Tests
+        run: |
+          # CommStack.dll을 실행 파일 위치에 복사
+          Copy-Item "Bin\x64\Release\CommStack.dll" "Bin\x64\Release\"
+          .\Bin\x64\Release\UnitTests.exe
+        shell: pwsh
+
+  # ════════════════════════════════════════════════════════════
+  #  Job 3: 빌드 + 패키징 + Release
+  # ════════════════════════════════════════════════════════════
+  build-and-release:
+    name: Build & Release
+    runs-on: windows-latest
+    needs: unit-tests   # 테스트 통과 후에만 릴리즈
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build CommStack.dll (Release)
+        run: |
+          msbuild CommStack\CommStack.vcxproj `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /m /verbosity:minimal
+
       - name: Verify build output
         shell: pwsh
         run: |
-          $required = @(
-            "Bin\x64\Release\CommStack.dll",
-            "Bin\x64\Release\CommStack.lib"
-          )
-          foreach ($f in $required) {
-            if (-not (Test-Path $f)) {
-              Write-Error "필수 파일 누락: $f"
-              exit 1
-            }
-            Write-Host "OK: $f"
+          @("Bin\x64\Release\CommStack.dll", "Bin\x64\Release\CommStack.lib") | ForEach-Object {
+            if (-not (Test-Path $_)) { Write-Error "누락: $_"; exit 1 }
+            Write-Host "OK: $_"
           }
 
-      # ── 5. 배포 패키지 구성 ───────────────────────────────────
-      #  CommStack.dll / CommStack.lib + Include 헤더 전체를 zip으로 묶음
       - name: Package release artifacts
         shell: pwsh
         run: |
@@ -72,28 +125,19 @@ jobs:
           $dist = "dist\CommStack-$version"
           New-Item -ItemType Directory -Force -Path "$dist\Include" | Out-Null
 
-          # 핵심 바이너리
           Copy-Item "Bin\x64\Release\CommStack.dll" "$dist\"
           Copy-Item "Bin\x64\Release\CommStack.lib" "$dist\"
+          Copy-Item "Include\*.hpp"                 "$dist\Include\"
+          Copy-Item "README.md"                     "$dist\"
+          Copy-Item "LICENSE"                       "$dist\"
 
-          # 공개 헤더
-          Copy-Item "Include\*.hpp" "$dist\Include\"
-
-          # README 포함
-          Copy-Item "README.md" "$dist\"
-
-          # zip 생성
           $zipName = "CommStack-$version-win-x64.zip"
           Compress-Archive -Path "$dist\*" -DestinationPath $zipName
 
-          # 다음 스텝에서 사용할 환경 변수 저장
-          "ZIP_NAME=$zipName"  | Out-File -FilePath $env:GITHUB_ENV -Append
-          "VERSION=$version"   | Out-File -FilePath $env:GITHUB_ENV -Append
-
+          "ZIP_NAME=$zipName" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VERSION=$version"  | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "패키지 완료: $zipName"
-          Get-ChildItem $dist -Recurse | Select-Object FullName
 
-      # ── 6. 빌드 아티팩트 업로드 (모든 트리거에서 실행) ────────
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -101,7 +145,6 @@ jobs:
           path: ${{ env.ZIP_NAME }}
           retention-days: 30
 
-      # ── 7. GitHub Release 생성 (태그 푸시 시에만 실행) ────────
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -113,12 +156,16 @@ jobs:
           body: |
             ## CommStack ${{ env.VERSION }} — Windows x64 Release
 
+            ✅ 정적 분석(MSVC /analyze) 통과
+            ✅ 단위 테스트 통과 (SpscQueue / PacketMemoryPool / CommApi)
+
             ### 포함 파일
             | 파일 | 설명 |
             |------|------|
             | `CommStack.dll` | 런타임 배포용 DLL |
             | `CommStack.lib` | C++ 링크용 임포트 라이브러리 |
             | `Include/*.hpp` | 공개 헤더 (API, 채널, 자료구조) |
+            | `LICENSE`       | MIT 라이선스 |
 
             ### C++ 프로젝트 적용
             ```
