@@ -77,10 +77,7 @@ jobs:
 
       # 테스트 실행 (exit code 비 0 → 스텝 실패)
       - name: Run Unit Tests
-        run: |
-          # CommStack.dll을 실행 파일 위치에 복사
-          Copy-Item "Bin\x64\Release\CommStack.dll" "Bin\x64\Release\"
-          .\Bin\x64\Release\UnitTests.exe
+        run: .\Bin\x64\Release\UnitTests.exe
         shell: pwsh
 
   # ════════════════════════════════════════════════════════════
