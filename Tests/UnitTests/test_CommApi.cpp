@@ -4,11 +4,13 @@
  * @details DLL 경계면의 방어 코드 및 채널 생명주기를 검증합니다.
  *          실제 네트워크 연결 없이 API의 안전성만 검증합니다.
  */
-#include "TestFramework.hpp"
 
-// CommStack.dll C-API 직접 참조 (링크 필요)
+// winsock2.h는 windows.h보다 먼저 include 되어야 함
+// TestFramework.hpp의 windows.h와 충돌 방지를 위해 CommApi를 먼저 include
 #include "../../Include/CommApi.hpp"
 #include "../../Include/ICommunicationChannel.hpp"
+#include "TestFramework.hpp"
+#include <cstring>
 
 #pragma comment(lib, "CommStack.lib")
 #pragma comment(lib, "ws2_32.lib")

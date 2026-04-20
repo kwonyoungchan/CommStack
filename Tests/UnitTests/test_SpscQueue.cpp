@@ -2,8 +2,8 @@
  * @file test_SpscQueue.cpp
  * @brief SpscQueue 단위 테스트
  */
-#include "TestFramework.hpp"
 #include "../../Include/SpscQueue.hpp"
+#include "TestFramework.hpp"
 #include <stdexcept>
 #include <thread>
 

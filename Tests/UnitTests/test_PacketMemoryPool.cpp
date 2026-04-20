@@ -2,8 +2,8 @@
  * @file test_PacketMemoryPool.cpp
  * @brief PacketMemoryPool 단위 테스트
  */
-#include "TestFramework.hpp"
 #include "../../Include/PacketMemoryPool.hpp"
+#include "TestFramework.hpp"
 #include <cstring>
 #include <vector>
 

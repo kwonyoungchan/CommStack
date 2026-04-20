@@ -4,12 +4,19 @@
  * @details 외부 라이브러리 없이 표준 C++17만으로 동작합니다.
  */
 #pragma once
+
+// ── include는 반드시 파일 최상단, 함수 밖에 위치해야 함 ─────────
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include <iostream>
 #include <string>
 #include <vector>
 #include <functional>
 
-// ── 색상 코드 (Windows 콘솔 지원) ──────────────────────────────
+// ── 색상 코드 (ANSI) ───────────────────────────────────────────
 #define CLR_GREEN  "\033[32m"
 #define CLR_RED    "\033[31m"
 #define CLR_YELLOW "\033[33m"
@@ -73,14 +80,13 @@ struct TestRegistrar {
 
 // ── 테스트 실행기 ──────────────────────────────────────────────
 inline int RunAllTests() {
+#ifdef _WIN32
     // Windows 콘솔 ANSI 색상 활성화
-    #ifdef _WIN32
-    #include <windows.h>
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD dwMode = 0;
     GetConsoleMode(hOut, &dwMode);
     SetConsoleMode(hOut, dwMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-    #endif
+#endif
 
     std::string currentSuite;
     for (auto& tc : g_testCases) {
